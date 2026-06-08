@@ -120,6 +120,8 @@ Put archive policy next to the model that owns the file.
 
 ```ruby
 class ProjectDocument < ApplicationRecord
+  scope :ready_for_archive, -> { where("created_at <= ?", 90.days.ago) }
+
   mount_uploader :file, DocumentUploader
 
   archive_storage_for :file do
@@ -128,6 +130,7 @@ class ProjectDocument < ApplicationRecord
     archive :archive_001,
       after: 90.days,
       scope: :ready_for_archive,
+      max_byte_size: 3.gigabytes,
       if: ->(record) { record.closed? }
 
     archive :archive_002,
@@ -147,7 +150,9 @@ class ProjectDocument < ApplicationRecord
 end
 ```
 
-`archive_storage_for` automatically wires the mounted CarrierWave uploader to `storage :archive_storage`. The uploader can stay focused on path, filename, and version behavior:
+`archive_storage_for` automatically wires the mounted CarrierWave uploader to `storage :archive_storage`.
+
+To avoid changing shared base uploaders globally, the gem creates a per-model/per-mount uploader subclass under the model and mounts that subclass internally. The original uploader can stay focused on path, filename, and version behavior:
 
 ```ruby
 class DocumentUploader < CarrierWave::Uploader::Base
@@ -162,6 +167,8 @@ Policy notes:
 - `primary` is where new uploads are stored.
 - `archive` rules are checked in order; the last eligible rule wins.
 - `scope` narrows the model relation before records are scanned. It can be a model scope name, a relation, or a callable that receives the current relation.
+- `after` is checked in Ruby after records are loaded. Keep heavy date filters, such as `created_at <= 2.months.ago`, inside the SQL `scope`.
+- `max_byte_size` skips oversized files using storage metadata before enqueueing and is checked again before migration.
 - `read_fallbacks` is the read-recovery order when registry metadata is missing or a configured fallback error is raised.
 - By default only the original CarrierWave file is planned. Use `include_versions true` or `versions ...` when thumbnails/previews must move too.
 
@@ -280,6 +287,12 @@ Turn it on only after the migration path has been verified in production:
 config.delete_source_enabled = true
 ```
 
+It can also be a callable, which is useful for feature flags:
+
+```ruby
+config.delete_source_enabled = -> { Unleash.enabled?(:archive_storage_delete_source) }
+```
+
 Per-mount cleanup delay:
 
 ```ruby
@@ -312,6 +325,12 @@ end
 ## Registry
 
 The generated migration creates `archive_storage_files`.
+
+The registry has a unique identity index on:
+
+```text
+record_type, record_id, mounted_as, identifier, storage_key
+```
 
 The registry stores:
 

@@ -35,7 +35,8 @@ class CreateArchiveStorageFiles < ActiveRecord::Migration[7.0]
     end
 
     add_index :archive_storage_files,
-              [:record_type, :record_id, :mounted_as, :identifier],
+              [:record_type, :record_id, :mounted_as, :identifier, :storage_key],
+              unique: true,
               name: "idx_archive_storage_identity"
 
     add_index :archive_storage_files,

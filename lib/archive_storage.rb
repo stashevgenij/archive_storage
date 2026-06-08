@@ -53,6 +53,15 @@ module ArchiveStorage
       configuration.mount(model, mounted_as, uploader: uploader, policy: policy)
     end
 
+    def build_mount_uploader!(model_class, mounted_as, uploader_class)
+      return uploader_class unless model_class.respond_to?(:uploaders)
+      return uploader_class unless model_class.uploaders.respond_to?(:[]=)
+
+      subclass = mount_uploader_subclass(model_class, mounted_as, uploader_class)
+      model_class.uploaders[mounted_as.to_sym] = subclass
+      subclass
+    end
+
     def wire_carrierwave_uploader!(uploader_class)
       return unless uploader_class
 
@@ -99,6 +108,17 @@ module ArchiveStorage
       model_class.archive_storage_policy_for(mounted_as)
     rescue NameError
       nil
+    end
+
+    def mount_uploader_subclass(model_class, mounted_as, uploader_class)
+      const_name = "ArchiveStorage#{camelize(mounted_as)}Uploader"
+      return model_class.const_get(const_name, false) if model_class.const_defined?(const_name, false)
+
+      model_class.const_set(const_name, Class.new(uploader_class))
+    end
+
+    def camelize(value)
+      value.to_s.split("_").map(&:capitalize).join
     end
 
     def mount_policy_for_uploader(uploader)

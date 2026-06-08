@@ -126,11 +126,13 @@ module ArchiveStorage
         storage_key: storage_key,
         default: policy.primary_storage_key
       )
-      target_storage = policy.target_storage_for(record)
-      return nil unless target_storage
-      return nil if current_storage.to_sym == target_storage.to_sym
+      now = Time.now
+      metadata = source_metadata_for(policy, record, current_storage, storage_key, now: now)
+      target_rule = policy.target_rule_for(record, now: now, byte_size: metadata&.byte_size)
+      return nil unless target_rule
 
-      metadata = estimate_metadata(target_storage, policy.primary_storage_key, storage_key)
+      target_storage = target_rule.storage_key
+      return nil if current_storage.to_sym == target_storage.to_sym
 
       Candidate.new(
         record: record,
@@ -179,8 +181,17 @@ module ArchiveStorage
       nil
     end
 
-    def estimate_metadata(_target_storage, source_storage, storage_key)
+    def estimate_metadata(source_storage, storage_key)
       return nil unless estimate_sizes
+
+      ArchiveStorage.adapter(source_storage).head(storage_key)
+    rescue StandardError
+      nil
+    end
+
+    def source_metadata_for(policy, record, source_storage, storage_key, now:)
+      return estimate_metadata(source_storage, storage_key) if estimate_sizes
+      return nil unless policy.requires_byte_size_for?(record, now: now)
 
       ArchiveStorage.adapter(source_storage).head(storage_key)
     rescue StandardError

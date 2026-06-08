@@ -27,12 +27,39 @@ module ArchiveStorage
       primary_storage&.storage_key
     end
 
-    def target_storage_for(record, now: Time.now)
+    def target_storage_for(record, now: Time.now, byte_size: nil)
+      target_rule_for(record, now: now, byte_size: byte_size)&.storage_key
+    end
+
+    def target_rule_for(record, now: Time.now, byte_size: nil)
       eligible_rules = rules.select do |rule|
-        rule.eligible?(record, now: now, timestamp_attribute: timestamp_attribute)
+        rule.eligible?(
+          record,
+          now: now,
+          timestamp_attribute: timestamp_attribute,
+          byte_size: byte_size
+        )
       end
 
-      eligible_rules.last&.storage_key
+      eligible_rules.last
+    end
+
+    def rule_for_storage(storage_key)
+      rules.reverse.find { |rule| rule.storage_key == storage_key.to_sym }
+    end
+
+    def requires_byte_size?
+      rules.any?(&:max_byte_size?)
+    end
+
+    def requires_byte_size_for?(record, now: Time.now)
+      rules.any? do |rule|
+        rule.requires_byte_size_for?(
+          record,
+          now: now,
+          timestamp_attribute: timestamp_attribute
+        )
+      end
     end
 
     def apply_rule_scopes(scope)

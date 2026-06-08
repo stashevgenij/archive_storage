@@ -44,7 +44,8 @@ module ArchiveStorage
         name,
         after: options[:after],
         condition: options[:if],
-        scope: options[:scope]
+        scope: options[:scope],
+        max_byte_size: options[:max_byte_size]
       )
     end
 

@@ -44,6 +44,10 @@ module ArchiveStorage
       @verification_strategy = :checksum if value
     end
 
+    def delete_source_enabled?
+      delete_source_enabled.respond_to?(:call) ? !!delete_source_enabled.call : !!delete_source_enabled
+    end
+
     def storage(name, &block)
       config = (@storages[name.to_sym] ||= StorageConfig.new(name))
       block.call(config) if block

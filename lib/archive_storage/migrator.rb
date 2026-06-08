@@ -48,6 +48,8 @@ module ArchiveStorage
         source = ArchiveStorage.adapter(source_storage)
         target = ArchiveStorage.adapter(target_storage)
 
+        validate_max_byte_size!(file_record, source, source_key, target_storage)
+
         target.copy_from(source, source_key, target_key)
         verification = Verifier.new.verify!(
           source_adapter: source,
@@ -105,7 +107,7 @@ module ArchiveStorage
     attr_reader :planner
 
     def cleanup_ready?(file_record)
-      return false unless ArchiveStorage.configuration.delete_source_enabled
+      return false unless ArchiveStorage.configuration.delete_source_enabled?
       return false unless file_record.source_storage
       return false if file_record.source_deleted_at
 
@@ -128,6 +130,17 @@ module ArchiveStorage
       ArchiveStorage.policy_for_record(file_record.record_type, file_record.mounted_as)
     rescue StandardError
       nil
+    end
+
+    def validate_max_byte_size!(file_record, source_adapter, source_key, target_storage)
+      rule = policy_for(file_record)&.rule_for_storage(target_storage)
+      return unless rule&.max_byte_size?
+
+      metadata = source_adapter.head(source_key)
+      return if rule.byte_size_allowed?(metadata.byte_size)
+
+      raise MaxByteSizeExceededError,
+            "object #{source_key.inspect} is #{metadata.byte_size} bytes; max is #{rule.max_byte_size}"
     end
 
     def safe_update_error(file_record, error)

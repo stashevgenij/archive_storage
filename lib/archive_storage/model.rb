@@ -7,9 +7,14 @@ module ArchiveStorage
 
       policy = PolicyBuilder.build(&block)
       uploader_class = archive_storage_uploader_for(mounted_as)
+      archive_uploader_class = ArchiveStorage.build_mount_uploader!(
+        self,
+        mounted_as,
+        uploader_class
+      )
 
-      ArchiveStorage.wire_carrierwave_uploader!(uploader_class)
-      ArchiveStorage.register_mount(self, mounted_as, uploader: uploader_class, policy: policy)
+      ArchiveStorage.wire_carrierwave_uploader!(archive_uploader_class)
+      ArchiveStorage.register_mount(self, mounted_as, uploader: archive_uploader_class, policy: policy)
 
       archive_storage_policies[mounted_as.to_sym] = policy
     end

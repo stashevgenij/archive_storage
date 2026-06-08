@@ -55,6 +55,8 @@ class StorageTest < Minitest::Test
 
     assert_equal "hello from model", uploader.file.read
     assert_match %r{\Amemory://hot/uploads/model_first/9/report}, uploader.url
+    assert_equal ModelFirstRecord::ArchiveStorageFileUploader, uploader.class
+    refute_equal ArchiveStorage::Storage, ModelFirstUploader.storage
   ensure
     tempfile&.close!
   end

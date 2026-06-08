@@ -2,19 +2,21 @@
 
 module ArchiveStorage
   class StorageRule
-    attr_reader :role, :storage_key, :after, :condition, :scope
+    attr_reader :role, :storage_key, :after, :condition, :scope, :max_byte_size
 
-    def initialize(role, storage_key, after: nil, condition: nil, scope: nil)
+    def initialize(role, storage_key, after: nil, condition: nil, scope: nil, max_byte_size: nil)
       @role = role.to_sym
       @storage_key = storage_key.to_sym
       @after = after
       @condition = condition
       @scope = scope
+      @max_byte_size = normalize_byte_size(max_byte_size)
     end
 
-    def eligible?(record, now:, timestamp_attribute:)
+    def eligible?(record, now:, timestamp_attribute:, byte_size: nil)
       old_enough?(record, now: now, timestamp_attribute: timestamp_attribute) &&
-        condition_matches?(record)
+        condition_matches?(record) &&
+        byte_size_allowed?(byte_size)
     end
 
     def scoped?
@@ -32,7 +34,30 @@ module ArchiveStorage
       end
     end
 
+    def max_byte_size?
+      !max_byte_size.nil?
+    end
+
+    def requires_byte_size_for?(record, now:, timestamp_attribute:)
+      max_byte_size? &&
+        old_enough?(record, now: now, timestamp_attribute: timestamp_attribute) &&
+        condition_matches?(record)
+    end
+
+    def byte_size_allowed?(byte_size)
+      return true unless max_byte_size?
+      return false if byte_size.nil?
+
+      byte_size <= max_byte_size
+    end
+
     private
+
+    def normalize_byte_size(value)
+      return nil if value.nil?
+
+      Integer(value)
+    end
 
     def old_enough?(record, now:, timestamp_attribute:)
       return true unless after

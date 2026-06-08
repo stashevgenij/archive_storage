@@ -247,7 +247,7 @@ class ModelFirstRecord
   end
 
   def self.uploaders
-    { file: ModelFirstUploader }
+    @uploaders ||= { file: ModelFirstUploader }
   end
 
   def self.configure_archive_storage!
@@ -255,6 +255,31 @@ class ModelFirstRecord
       primary :hot
       archive :archive, after: 90 * 24 * 60 * 60, scope: :ready_for_archive
       read_fallbacks :hot, :archive
+    end
+  end
+
+  def self.configure_archive_storage_with_max!(max_byte_size)
+    archive_storage_for :file do
+      primary :hot
+      archive :archive,
+              after: 90 * 24 * 60 * 60,
+              scope: :ready_for_archive,
+              max_byte_size: max_byte_size
+      read_fallbacks :hot, :archive
+    end
+  end
+
+  def self.configure_archive_storage_to_second_archive_with_max!(max_byte_size)
+    archive_storage_for :file do
+      primary :hot
+      archive :archive,
+              after: 90 * 24 * 60 * 60,
+              scope: :ready_for_archive
+      archive :archive_002,
+              after: 90 * 24 * 60 * 60,
+              scope: :ready_for_archive,
+              max_byte_size: max_byte_size
+      read_fallbacks :hot, :archive, :archive_002
     end
   end
 
@@ -269,7 +294,7 @@ class ModelFirstRecord
   end
 
   def file
-    @file ||= ModelFirstUploader.new(self, :file).tap do |uploader|
+    @file ||= self.class.uploaders.fetch(:file).new(self, :file).tap do |uploader|
       uploader.retrieve_from_store!("report-#{id}.txt")
     end
   end
@@ -278,6 +303,9 @@ end
 class FakeFileRecord
   ATTRS = [
     :id,
+    :record_type,
+    :record_id,
+    :mounted_as,
     :uploader,
     :storage_key,
     :source_storage_key,

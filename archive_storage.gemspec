@@ -8,8 +8,8 @@ Gem::Specification.new do |spec|
   spec.authors = ["E. Tashkovyan"]
   spec.email = []
 
-  spec.summary = "Policy-based archive storage and zero-downtime file migration."
-  spec.description = "Move uploads across storage backends such as filesystem, NFS, MinIO, and S3 without downtime."
+  spec.summary = "Archival storage for Rails uploaders."
+  spec.description = "Move older Rails uploads across storage backends such as filesystem, NFS, MinIO, and S3."
   spec.homepage = "https://github.com/estashkovyan/archive_storage"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"

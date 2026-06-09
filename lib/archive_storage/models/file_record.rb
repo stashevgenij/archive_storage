@@ -16,6 +16,8 @@ module ArchiveStorage
           scope :pending_cleanup, -> {
             verified.where(source_delete_pending: true, source_deleted_at: nil).where.not(source_storage: nil)
           }
+          scope :terminal_failed, -> { where.not(terminal_failed_at: nil) }
+          scope :next_retry_scheduled, -> { where.not(next_attempt_at: nil).where(terminal_failed_at: nil) }
 
           def verified?
             !!verified_at

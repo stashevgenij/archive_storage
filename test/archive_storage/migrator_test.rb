@@ -91,5 +91,123 @@ class MigratorTest < Minitest::Test
       ArchiveStorage::Migrator.new.migrate_record!(record)
     end
     refute ArchiveStorage.adapter(:archive).exists?("uploads/model_first/1/report-1.txt")
+    assert_equal 1, record.attempts
+    assert_match "MaxByteSizeExceededError", record.last_error
+    assert record.terminal_failed_at
+    assert_nil record.next_attempt_at
+  end
+
+  def test_migration_error_sets_next_attempt_at_for_retry
+    ArchiveStorage.configure do |config|
+      config.retry_delays = [60]
+      config.storage(:archive) { |storage| storage.adapter = FailingCopyAdapter.new }
+    end
+    ArchiveStorage.adapter(:hot).write("uploads/1/report.txt", "hello")
+    record = FakeFileRecord.new(
+      id: 1,
+      storage_key: "uploads/1/report.txt",
+      current_storage: "hot",
+      source_storage: "hot",
+      target_storage: "archive",
+      attempts: 0,
+      enqueued_at: Time.now
+    )
+
+    assert_raises(RuntimeError) do
+      ArchiveStorage::Migrator.new.migrate_record!(record)
+    end
+
+    assert_equal 1, record.attempts
+    assert_match "copy failed", record.last_error
+    assert_nil record.enqueued_at
+    assert record.next_attempt_at > Time.now
+    refute record.terminal_failed_at
+  end
+
+  def test_migration_error_marks_terminal_after_max_attempts
+    ArchiveStorage.configure do |config|
+      config.max_attempts = 1
+      config.retry_delays = [60]
+      config.storage(:archive) { |storage| storage.adapter = FailingCopyAdapter.new }
+    end
+    ArchiveStorage.adapter(:hot).write("uploads/1/report.txt", "hello")
+    record = FakeFileRecord.new(
+      id: 1,
+      storage_key: "uploads/1/report.txt",
+      current_storage: "hot",
+      source_storage: "hot",
+      target_storage: "archive",
+      attempts: 0,
+      enqueued_at: Time.now
+    )
+
+    assert_raises(RuntimeError) do
+      ArchiveStorage::Migrator.new.migrate_record!(record)
+    end
+
+    assert_equal 1, record.attempts
+    assert record.terminal_failed_at
+    assert_nil record.next_attempt_at
+  end
+
+  def test_existing_exhausted_attempts_are_marked_terminal
+    ArchiveStorage.configuration.max_attempts = 1
+    record = FakeFileRecord.new(
+      id: 1,
+      storage_key: "uploads/1/report.txt",
+      current_storage: "hot",
+      source_storage: "hot",
+      target_storage: "archive",
+      attempts: 1,
+      next_attempt_at: Time.now - 60
+    )
+
+    ArchiveStorage::Migrator.new.migrate_record!(record)
+
+    assert record.terminal_failed_at
+    assert_nil record.next_attempt_at
+  end
+
+  def test_migration_job_uses_registry_backoff_without_backend_retry
+    ArchiveStorage.configure do |config|
+      config.registry_class_name = "MigrationJobRegistryRecord"
+      config.retry_delays = [60]
+      config.storage(:archive) { |storage| storage.adapter = FailingCopyAdapter.new }
+    end
+    ArchiveStorage.adapter(:hot).write("uploads/1/report.txt", "hello")
+    record = FakeFileRecord.new(
+      id: 1,
+      storage_key: "uploads/1/report.txt",
+      current_storage: "hot",
+      source_storage: "hot",
+      target_storage: "archive",
+      attempts: 0,
+      enqueued_at: Time.now
+    )
+    MigrationJobRegistryRecord.record = record
+
+    result = ArchiveStorage::Jobs::MigrationJob.perform_now(1)
+
+    assert_equal false, result
+    assert_equal 1, record.attempts
+    assert record.next_attempt_at
+  ensure
+    MigrationJobRegistryRecord.record = nil
+  end
+
+  class FailingCopyAdapter
+    def copy_from(*)
+      raise "copy failed"
+    end
+  end
+end
+
+class MigrationJobRegistryRecord
+  class << self
+    attr_accessor :record
+
+    def find_by(id:)
+      record if record&.id == id
+    end
   end
 end

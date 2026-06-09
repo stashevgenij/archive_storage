@@ -317,10 +317,12 @@ class FakeFileRecord
     :content_type,
     :checksum,
     :enqueued_at,
+    :next_attempt_at,
     :migration_started_at,
     :migrated_at,
     :verified_at,
     :source_deleted_at,
+    :terminal_failed_at,
     :source_delete_pending,
     :last_error,
     :attempts
@@ -338,6 +340,127 @@ class FakeFileRecord
 
   def update!(attrs)
     attrs.each { |key, value| public_send("#{key}=", value) }
+  end
+end
+
+class AttachmentUploader < CarrierWave::Uploader::Base
+  def store_dir
+    "uploads/attachments/#{model.id}"
+  end
+end
+
+class GroAttachmentUploader < CarrierWave::Uploader::Base
+  def store_dir
+    "uploads/gro_auth_representatives/#{model.id}"
+  end
+end
+
+class AttachmentRecordScope
+  def initialize(records)
+    @records = records
+  end
+
+  def for_archive
+    self.class.new(@records.reject(&:gro_auth_representative?))
+  end
+
+  def find_each(batch_size: nil)
+    @records.each { |record| yield record }
+  end
+end
+
+class Attachment
+  extend ArchiveStorage::Model
+
+  attr_reader :id, :created_at
+
+  def self.records
+    @records ||= []
+  end
+
+  def self.all
+    AttachmentRecordScope.new(records)
+  end
+
+  def self.column_names
+    []
+  end
+
+  def self.uploaders
+    @uploaders ||= { file: AttachmentUploader }
+  end
+
+  def self.configure_archive_storage!
+    archive_storage_for :file do
+      primary :hot
+      archive :archive, after: 90 * 24 * 60 * 60, scope: :for_archive
+      read_fallbacks :hot, :archive
+    end
+  end
+
+  def initialize(id:, gro: false, created_at: Time.now - 120 * 24 * 60 * 60)
+    @id = id
+    @gro = gro
+    @created_at = created_at
+  end
+
+  def gro_auth_representative?
+    @gro
+  end
+
+  def file
+    @file ||= self.class.uploaders.fetch(:file).new(self, :file).tap do |uploader|
+      uploader.retrieve_from_store!("attachment-#{id}.txt")
+    end
+  end
+end
+
+module Organization
+  class GroAuthRepresentative
+    class Attachment
+      extend ArchiveStorage::Model
+
+      attr_reader :id, :created_at
+
+      def self.records
+        @records ||= []
+      end
+
+      def self.all
+        AttachmentRecordScope.new(records)
+      end
+
+      def self.column_names
+        []
+      end
+
+      def self.uploaders
+        @uploaders ||= { file: GroAttachmentUploader }
+      end
+
+      def self.configure_archive_storage!
+        archive_storage_for :file do
+          primary :hot
+          archive :archive_002, after: 90 * 24 * 60 * 60
+          read_fallbacks :hot, :archive_002
+        end
+      end
+
+      def initialize(id:, created_at: Time.now - 120 * 24 * 60 * 60)
+        @id = id
+        @created_at = created_at
+      end
+
+      def gro_auth_representative?
+        true
+      end
+
+      def file
+        @file ||= self.class.uploaders.fetch(:file).new(self, :file).tap do |uploader|
+          uploader.retrieve_from_store!("gro-attachment-#{id}.txt")
+        end
+      end
+    end
   end
 end
 

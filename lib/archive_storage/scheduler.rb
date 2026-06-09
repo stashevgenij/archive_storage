@@ -32,6 +32,7 @@ module ArchiveStorage
       require "sidekiq"
       require "sidekiq-cron"
       require_relative "jobs/sidekiq_queue_worker"
+      require_relative "jobs/sidekiq_cleanup_worker"
 
       ::Sidekiq.configure_server do |config|
         config.on(:startup) do
@@ -49,6 +50,7 @@ module ArchiveStorage
       require "sidekiq"
       require "sidekiq-scheduler"
       require_relative "jobs/sidekiq_queue_worker"
+      require_relative "jobs/sidekiq_cleanup_worker"
 
       ::Sidekiq.configure_server do |config|
         config.on(:startup) do

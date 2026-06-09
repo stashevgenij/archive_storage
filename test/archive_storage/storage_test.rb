@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../test_helper"
+require "archive_storage/adapters/s3"
 
 class StorageTest < Minitest::Test
   include ArchiveStorageTestConfig
@@ -76,6 +77,45 @@ class StorageTest < Minitest::Test
       assert_equal "from disk", adapter.read("uploads/report.txt")
       assert_equal 9, adapter.head("uploads/report.txt").byte_size
       assert adapter.url("uploads/report.txt").start_with?(root)
+    end
+  end
+
+  def test_s3_copy_preserves_source_content_type
+    config = ArchiveStorage::StorageConfig.new(:archive)
+    config.bucket = "archive"
+    adapter = ArchiveStorage::Adapters::S3.new(config)
+    client = FakeS3Client.new
+    source = FakeDownloadAdapter.new("application/pdf")
+
+    adapter.define_singleton_method(:client) { client }
+    adapter.copy_from(source, "source/report.pdf", "target/report.pdf")
+
+    assert_equal "application/pdf", client.put_objects.first.fetch(:content_type)
+  end
+
+  class FakeS3Client
+    attr_reader :put_objects
+
+    def initialize
+      @put_objects = []
+    end
+
+    def put_object(args)
+      put_objects << args
+    end
+  end
+
+  class FakeDownloadAdapter
+    def initialize(content_type)
+      @content_type = content_type
+    end
+
+    def head(_key)
+      ArchiveStorage::Adapters::Metadata.new(byte_size: 3, content_type: @content_type)
+    end
+
+    def download_to(_key, path)
+      File.binwrite(path, "pdf")
     end
   end
 end

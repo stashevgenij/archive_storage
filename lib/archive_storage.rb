@@ -17,8 +17,10 @@ require_relative "archive_storage/planner"
 require_relative "archive_storage/enqueuer"
 require_relative "archive_storage/verifier"
 require_relative "archive_storage/migrator"
+require_relative "archive_storage/cleanup"
 require_relative "archive_storage/jobs/queue_job"
 require_relative "archive_storage/jobs/migration_job"
+require_relative "archive_storage/jobs/cleanup_job"
 
 module ArchiveStorage
   class << self

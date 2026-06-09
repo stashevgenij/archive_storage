@@ -2,6 +2,7 @@
 
 require "archive_storage/planner"
 require "archive_storage/migrator"
+require "archive_storage/cleanup"
 require "archive_storage/jobs/migration_job"
 
 namespace :archive_storage do
@@ -56,19 +57,22 @@ namespace :archive_storage do
 
   desc "Delete verified source copies after cleanup delay"
   task cleanup_source: :environment do
-    scope = ArchiveStorage.configuration.registry_class.pending_cleanup
-    count = 0
+    result = ArchiveStorage::Cleanup.new(limit: ENV["LIMIT"]).call
 
-    scope.find_each do |file_record|
-      count += 1 if ArchiveStorage::Migrator.new.cleanup_source!(file_record)
-    end
-
-    puts "Deleted #{count} source copies"
+    puts "Deleted #{result.deleted} source copies"
+    puts "Pending cleanup remaining: #{result.remaining_pending}"
   end
 
   desc "Show ArchiveStorage migration status"
   task status: :environment do
     records = ArchiveStorage.configuration.registry_class
+    count_present = lambda do |column|
+      if records.respond_to?(:column_names) && records.column_names.include?(column.to_s)
+        records.where.not(column => nil).count
+      else
+        0
+      end
+    end
 
     puts "ArchiveStorage Status"
     puts ""
@@ -78,5 +82,7 @@ namespace :archive_storage do
     puts "Pending cleanup:  #{records.pending_cleanup.count}"
     puts "Source deleted:   #{records.where.not(source_deleted_at: nil).count}"
     puts "Failed:           #{records.where.not(last_error: [nil, ""]).count}"
+    puts "Terminal failed:  #{count_present.call(:terminal_failed_at)}"
+    puts "Next retry scheduled: #{count_present.call(:next_attempt_at)}"
   end
 end

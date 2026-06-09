@@ -65,6 +65,7 @@ module ArchiveStorage
         record.source_storage_key = candidate.source_storage_key.to_s if record.respond_to?(:source_storage_key=)
         record.target_storage_key = candidate.target_storage_key.to_s if record.respond_to?(:target_storage_key=)
         record.enqueued_at = Time.now if record.respond_to?(:enqueued_at=)
+        record.next_attempt_at = nil if record.respond_to?(:next_attempt_at=)
         record.source_delete_pending = false if record.respond_to?(:source_delete_pending=) && record.new_record?
         record.byte_size ||= candidate.byte_size
         record.content_type ||= candidate.content_type
@@ -83,10 +84,27 @@ module ArchiveStorage
 
     def claimable?(record)
       return false if record.respond_to?(:migrated_at) && record.migrated_at
+      return false if record.respond_to?(:terminal_failed_at) && record.terminal_failed_at
+      return false if attempts_exhausted?(record)
+      return false if retry_scheduled?(record)
       return true unless record.respond_to?(:enqueued_at)
       return true unless record.enqueued_at
 
       record.enqueued_at <= Time.now - ArchiveStorage.configuration.enqueue_claim_ttl
+    end
+
+    def attempts_exhausted?(record)
+      return false unless record.respond_to?(:attempts)
+
+      max_attempts = ArchiveStorage.configuration.max_attempts
+      max_attempts && record.attempts.to_i >= max_attempts.to_i
+    end
+
+    def retry_scheduled?(record)
+      return false unless record.respond_to?(:next_attempt_at)
+      return false unless record.next_attempt_at
+
+      record.next_attempt_at > Time.now
     end
 
     def uploader_identity_available?(uploader)

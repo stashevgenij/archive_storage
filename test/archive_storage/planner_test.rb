@@ -10,6 +10,8 @@ class PlannerTest < Minitest::Test
     VersionedRecord.records.clear
     ScopedRecord.records.clear
     ModelFirstRecord.records.clear
+    Attachment.records.clear
+    Organization::GroAuthRepresentative::Attachment.records.clear
   end
 
   def test_includes_versioned_files_when_policy_requests_versions
@@ -89,5 +91,30 @@ class PlannerTest < Minitest::Test
     assert_equal [:archive_002], candidates.map(&:target_storage)
   ensure
     ArchiveStorage.registry = previous_registry if previous_registry
+  end
+
+  def test_model_specific_policies_for_base_and_gro_attachments
+    ArchiveStorage.configure do |config|
+      config.storage(:archive_002) { |storage| storage.provider = :memory }
+    end
+    Attachment.configure_archive_storage!
+    Organization::GroAuthRepresentative::Attachment.configure_archive_storage!
+    Attachment.records << Attachment.new(id: 1)
+    Attachment.records << Attachment.new(id: 2, gro: true)
+    Organization::GroAuthRepresentative::Attachment.records << Organization::GroAuthRepresentative::Attachment.new(id: 3)
+
+    base_candidates = ArchiveStorage::Planner
+                      .new(model: "Attachment", mounted_as: :file)
+                      .each_candidate
+                      .to_a
+    gro_candidates = ArchiveStorage::Planner
+                     .new(model: "Organization::GroAuthRepresentative::Attachment", mounted_as: :file)
+                     .each_candidate
+                     .to_a
+
+    assert_equal ["uploads/attachments/1/attachment-1.txt"], base_candidates.map(&:storage_key)
+    assert_equal [:archive], base_candidates.map(&:target_storage)
+    assert_equal ["uploads/gro_auth_representatives/3/gro-attachment-3.txt"], gro_candidates.map(&:storage_key)
+    assert_equal [:archive_002], gro_candidates.map(&:target_storage)
   end
 end

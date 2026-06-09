@@ -23,9 +23,11 @@ class CreateArchiveStorageFiles < ActiveRecord::Migration[7.0]
 
       t.datetime :migration_started_at
       t.datetime :enqueued_at
+      t.datetime :next_attempt_at
       t.datetime :migrated_at
       t.datetime :verified_at
       t.datetime :source_deleted_at
+      t.datetime :terminal_failed_at
 
       t.boolean :source_delete_pending, null: false, default: false
       t.string :last_error
@@ -50,5 +52,13 @@ class CreateArchiveStorageFiles < ActiveRecord::Migration[7.0]
     add_index :archive_storage_files,
               [:source_delete_pending, :source_deleted_at],
               name: "idx_archive_storage_delete_pending"
+
+    add_index :archive_storage_files,
+              :next_attempt_at,
+              name: "idx_archive_storage_next_attempt"
+
+    add_index :archive_storage_files,
+              :terminal_failed_at,
+              name: "idx_archive_storage_terminal_failed"
   end
 end

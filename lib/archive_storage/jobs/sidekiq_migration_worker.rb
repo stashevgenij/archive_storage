@@ -20,7 +20,11 @@ module ArchiveStorage
           record = ArchiveStorage.configuration.registry_class.find_by(id: file_record_id)
           return unless record
 
-          Migrator.new.migrate_record!(record)
+          begin
+            Migrator.new.migrate_record!(record)
+          rescue StandardError
+            false
+          end
         end
       end
     end

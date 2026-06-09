@@ -17,8 +17,11 @@ The gem currently supports CarrierWave. The storage, registry, and migration lay
 - [Scheduled Jobs](#scheduled-jobs)
 - [Command Line](#command-line)
 - [Migration Flow](#migration-flow)
+- [Retry and Backoff](#retry-and-backoff)
 - [Verification](#verification)
 - [Cleanup](#cleanup)
+- [NFS and S3](#nfs-and-s3)
+- [STI and Polymorphic Models](#sti-and-polymorphic-models)
 - [Registry](#registry)
 - [Development](#development)
 
@@ -31,7 +34,9 @@ The gem currently supports CarrierWave. The storage, registry, and migration lay
 - ActiveRecord registry table for file location and migration state
 - Dry-run planning
 - Scheduled enqueueing
+- Scheduled source cleanup
 - Background migration jobs
+- Retry/backoff state for failed migrations
 - Copy, verify, read switch, fallback read, and delayed source cleanup
 - Optional CarrierWave version/thumb migration
 - GoodJob, ActiveJob, Sidekiq, `sidekiq-cron`, and `sidekiq-scheduler` support
@@ -185,8 +190,11 @@ ArchiveStorage.configure do |config|
   # config.job_backend = :active_job # :active_job, :good_job, :sidekiq, or :inline
   # config.migration_queue = :default
   # config.schedule_queue = :default
+  # config.cleanup_queue = :default
   # config.default_batch_size = 500
   # config.verification_strategy = :auto
+  # config.max_attempts = 5
+  # config.retry_delays = [5.minutes, 30.minutes, 2.hours, 6.hours]
   # config.delete_source_enabled = false
   # config.default_cleanup_delay = 7.days
 end
@@ -310,10 +318,16 @@ ArchiveStorage.configure do |config|
                   model: "ProjectDocument",
                   mounted_as: :file,
                   migration_rate: 10_000
+
+  config.cleanup_schedule :archive_cleanup,
+                          cron: "30 3 * * *",
+                          limit: 5_000
 end
 ```
 
 `migration_rate` is the maximum number of files enqueued by one scheduled run. If the cron runs every 10 minutes, `migration_rate: 10_000` means up to 10,000 files per run, not per hour.
+
+`cleanup_schedule` runs source cleanup with the same checks used by `archive_storage:cleanup_source`: `delete_source_enabled`, `delete_source_after`, `source_delete_pending`, and `source_deleted_at`.
 
 `archive_storage` registers scheduler entries automatically. You do not need to merge `ArchiveStorage.good_job_cron` or `ArchiveStorage.sidekiq_cron` into your application config.
 
@@ -365,7 +379,7 @@ bin/rails archive_storage:plan MODEL=ProjectDocument MOUNT=file
 bin/rails archive_storage:enqueue MODEL=ProjectDocument MOUNT=file
 bin/rails archive_storage:migrate MODEL=ProjectDocument MOUNT=file
 bin/rails archive_storage:verify
-bin/rails archive_storage:cleanup_source
+bin/rails archive_storage:cleanup_source LIMIT=1000
 bin/rails archive_storage:status
 ```
 
@@ -388,8 +402,8 @@ Command behavior:
 - `migrate` enqueues migration jobs by default.
 - `migrate INLINE=true` runs migration inline.
 - `verify` rechecks already migrated files.
-- `cleanup_source` deletes verified source copies after the cleanup delay.
-- `status` prints registry counters.
+- `cleanup_source` deletes verified source copies after the cleanup delay. `LIMIT` caps deletes for one run.
+- `status` prints registry counters, including terminal failures and scheduled retries.
 
 `MODEL` and `MOUNT` are recommended for model-level policies. `UPLOADER` is still accepted for advanced or legacy uploader-level configurations.
 
@@ -407,6 +421,30 @@ source deleted later when cleanup is enabled
 ```
 
 This keeps the application reading through the uploader while files are being copied and verified.
+
+## Retry and Backoff
+
+Migration failures are stored in the registry. The job wrapper does not rely on immediate backend retries.
+
+```ruby
+ArchiveStorage.configure do |config|
+  config.max_attempts = 5
+  config.retry_delays = [5.minutes, 30.minutes, 2.hours, 6.hours]
+end
+```
+
+On a migration error, `archive_storage`:
+
+- increments `attempts`;
+- stores `last_error`;
+- clears `enqueued_at`;
+- sets `next_attempt_at` from `retry_delays`;
+- stops automatic enqueueing after `max_attempts`;
+- marks terminal failures in `terminal_failed_at`.
+
+`MaxByteSizeExceededError` is terminal immediately. It does not schedule another retry.
+
+To retry a terminal failure manually, reset the registry row state in your application, for example by clearing `terminal_failed_at`, `next_attempt_at`, `last_error`, and lowering `attempts`.
 
 ## Verification
 
@@ -470,8 +508,108 @@ end
 Run cleanup:
 
 ```bash
-bin/rails archive_storage:cleanup_source
+bin/rails archive_storage:cleanup_source LIMIT=1000
 ```
+
+The task prints both the number of deleted source files and the remaining pending cleanup count.
+
+Scheduled cleanup:
+
+```ruby
+ArchiveStorage.configure do |config|
+  config.cleanup_queue = :archive_cleanup
+
+  config.cleanup_schedule :archive_cleanup,
+                          cron: "30 3 * * *",
+                          limit: 5_000
+end
+```
+
+## NFS and S3
+
+Filesystem storage can be used for legacy NFS attachments while newer files live in S3-compatible storage:
+
+```ruby
+ArchiveStorage.configure do |config|
+  config.storage :nfs_main do |s|
+    s.provider = :filesystem
+    s.root_path = "/mnt/legacy_uploads"
+  end
+
+  config.storage :main do |s|
+    s.provider = :s3
+    s.endpoint = ENV.fetch("MAIN_STORAGE_ENDPOINT")
+    s.bucket = "production-main"
+    s.access_key_id = ENV.fetch("MAIN_STORAGE_ACCESS_KEY")
+    s.secret_access_key = ENV.fetch("MAIN_STORAGE_SECRET_KEY")
+    s.region = "us-east-1"
+    s.path_style = true
+  end
+
+  config.storage :archive do |s|
+    s.provider = :s3
+    s.endpoint = ENV.fetch("ARCHIVE_STORAGE_ENDPOINT")
+    s.bucket = "production-archive"
+    s.access_key_id = ENV.fetch("ARCHIVE_STORAGE_ACCESS_KEY")
+    s.secret_access_key = ENV.fetch("ARCHIVE_STORAGE_SECRET_KEY")
+    s.region = "us-east-1"
+    s.path_style = true
+  end
+end
+```
+
+If only S3-backed rows should be archived, keep that condition in SQL:
+
+```ruby
+class Attachment < ApplicationRecord
+  scope :s3_ready_for_archive, -> {
+    where(storage_type: "s3").where("created_at <= ?", 90.days.ago)
+  }
+
+  archive_storage_for :file do
+    primary :main
+    archive :archive, after: 90.days, scope: :s3_ready_for_archive
+    read_fallbacks :archive, :main, :nfs_main
+  end
+end
+```
+
+In this setup, NFS records are available as a read fallback, but the planner only scans rows from `storage_type = "s3"`.
+
+## STI and Polymorphic Models
+
+Different models can define different archive policies for the same mounted field.
+
+```ruby
+class Attachment < ApplicationRecord
+  scope :for_archive, -> {
+    where.not(record_type: "Organization::GroAuthRepresentative")
+      .where("created_at <= ?", 90.days.ago)
+  }
+
+  mount_uploader :file, FileAttachmentUploader
+
+  archive_storage_for :file do
+    primary :main
+    archive :archive, after: 90.days, scope: :for_archive
+    read_fallbacks :main, :archive
+  end
+end
+
+class Organization::GroAuthRepresentative::Attachment < Attachment
+  mount_uploader :file, GroAuthRepresentativeUploader
+
+  archive_storage_for :file do
+    primary :main
+    archive :archive, after: 90.days, scope: ->(records) {
+      records.where("created_at <= ?", 90.days.ago)
+    }
+    read_fallbacks :main, :archive
+  end
+end
+```
+
+`archive_storage_for` creates a per-model/per-mount uploader subclass, so the base `FileAttachmentUploader` is not globally switched when a special model needs a different uploader or path.
 
 ## Registry
 
@@ -482,7 +620,7 @@ The registry stores:
 - model identity: `record_type`, `record_id`, `mounted_as`, `uploader`
 - object identity: `identifier`, `storage_key`, `source_storage_key`, `target_storage_key`
 - storage state: `current_storage`, `source_storage`, `target_storage`
-- migration state: `enqueued_at`, `migration_started_at`, `migrated_at`, `verified_at`, `source_deleted_at`
+- migration state: `enqueued_at`, `next_attempt_at`, `migration_started_at`, `migrated_at`, `verified_at`, `source_deleted_at`, `terminal_failed_at`
 - metadata: `byte_size`, `checksum`, `content_type`, `attempts`, `last_error`
 
 The registry has a unique identity index on:
@@ -493,7 +631,16 @@ record_type, record_id, mounted_as, identifier, storage_key
 
 Business tables do not need extra columns for archive location.
 
-If an application generated an older migration without the unique identity index, add a migration that replaces the old identity index with the unique one before relying on parallel enqueueing.
+If an application generated an older migration, add a migration for the newer registry fields before relying on retry/backoff or parallel enqueueing:
+
+```ruby
+add_column :archive_storage_files, :next_attempt_at, :datetime
+add_column :archive_storage_files, :terminal_failed_at, :datetime
+add_index :archive_storage_files, :next_attempt_at, name: "idx_archive_storage_next_attempt"
+add_index :archive_storage_files, :terminal_failed_at, name: "idx_archive_storage_terminal_failed"
+```
+
+Also replace the old identity index with the unique identity index if it is not unique yet.
 
 ## Development
 

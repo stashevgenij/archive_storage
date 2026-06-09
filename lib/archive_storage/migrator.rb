@@ -32,6 +32,9 @@ module ArchiveStorage
 
     def migrate_record!(file_record)
       file_record.with_lock do
+        return file_record if terminal_failed?(file_record)
+        return mark_attempts_exhausted!(file_record) if attempts_exhausted?(file_record)
+
         source_storage = (file_record.source_storage || file_record.current_storage).to_sym
         target_storage = file_record.target_storage.to_sym
         source_key = file_record_source_key(file_record)
@@ -39,11 +42,14 @@ module ArchiveStorage
 
         return file_record if source_storage == target_storage && file_record.verified_at
 
-        file_record.update!(
+        start_attrs = {
           migration_started_at: Time.now,
           attempts: file_record.attempts.to_i + 1,
           last_error: nil
-        )
+        }
+        start_attrs[:next_attempt_at] = nil if file_record.respond_to?(:next_attempt_at=)
+
+        file_record.update!(start_attrs)
 
         source = ArchiveStorage.adapter(source_storage)
         target = ArchiveStorage.adapter(target_storage)
@@ -59,7 +65,7 @@ module ArchiveStorage
         )
         target_metadata = verification.target_metadata
 
-        file_record.update!(
+        success_attrs = {
           current_storage: target_storage.to_s,
           source_storage: source_storage.to_s,
           target_storage: target_storage.to_s,
@@ -71,7 +77,11 @@ module ArchiveStorage
           verified_at: Time.now,
           source_delete_pending: source_storage != target_storage,
           last_error: nil
-        )
+        }
+        success_attrs[:next_attempt_at] = nil if file_record.respond_to?(:next_attempt_at=)
+        success_attrs[:terminal_failed_at] = nil if file_record.respond_to?(:terminal_failed_at=)
+
+        file_record.update!(success_attrs)
       end
 
       file_record
@@ -144,9 +154,53 @@ module ArchiveStorage
     end
 
     def safe_update_error(file_record, error)
-      file_record.update!(last_error: "#{error.class}: #{error.message}") if file_record.respond_to?(:update!)
+      return unless file_record.respond_to?(:update!)
+
+      file_record.update!(failure_attributes(file_record, error))
     rescue StandardError
       nil
+    end
+
+    def failure_attributes(file_record, error)
+      attrs = {
+        last_error: "#{error.class}: #{error.message}"
+      }
+      attrs[:enqueued_at] = nil if file_record.respond_to?(:enqueued_at=)
+
+      if terminal_error?(error) || attempts_exhausted?(file_record)
+        attrs[:terminal_failed_at] = Time.now if file_record.respond_to?(:terminal_failed_at=)
+        attrs[:next_attempt_at] = nil if file_record.respond_to?(:next_attempt_at=)
+      elsif file_record.respond_to?(:next_attempt_at=)
+        attrs[:next_attempt_at] = Time.now + ArchiveStorage.configuration.retry_delay_for(file_record.attempts.to_i)
+        attrs[:terminal_failed_at] = nil if file_record.respond_to?(:terminal_failed_at=)
+      end
+
+      attrs
+    end
+
+    def terminal_error?(error)
+      error.is_a?(MaxByteSizeExceededError)
+    end
+
+    def terminal_failed?(file_record)
+      file_record.respond_to?(:terminal_failed_at) && file_record.terminal_failed_at
+    end
+
+    def attempts_exhausted?(file_record)
+      max_attempts = ArchiveStorage.configuration.max_attempts
+      return false unless max_attempts
+
+      file_record.attempts.to_i >= max_attempts.to_i
+    end
+
+    def mark_attempts_exhausted!(file_record)
+      return file_record unless file_record.respond_to?(:update!)
+      return file_record unless file_record.respond_to?(:terminal_failed_at=)
+
+      attrs = { terminal_failed_at: Time.now }
+      attrs[:next_attempt_at] = nil if file_record.respond_to?(:next_attempt_at=)
+      file_record.update!(attrs)
+      file_record
     end
 
     def file_record_source_key(file_record)
